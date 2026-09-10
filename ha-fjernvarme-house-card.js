@@ -1,4 +1,4 @@
-const VERSION = "0.1.56";
+const VERSION = "0.1.57";
 
 const FIELDS = [
   ["primary_supply", "Fjernvarme fremløb"], ["primary_return", "Fjernvarme retur"], ["primary_valve", "Fjernvarme hovedventil"], ["summer_cutoff", "Sommerudkobling"],
