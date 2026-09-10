@@ -1,4 +1,4 @@
-const VERSION = "0.1.51";
+const VERSION = "0.1.56";
 
 const FIELDS = [
   ["primary_supply", "Fjernvarme fremløb"], ["primary_return", "Fjernvarme retur"], ["primary_valve", "Fjernvarme hovedventil"], ["summer_cutoff", "Sommerudkobling"],
@@ -29,11 +29,17 @@ class HAFjernvarmeHouseCard extends HTMLElement {
   constructor() {
     super(); this.attachShadow({ mode: "open" }); this._config = {}; this._hass = null; this._signature = "";
     this._id = `fvh-${Math.random().toString(36).slice(2, 9)}`;
+    this.shadowRoot.addEventListener("click", event => this._handleMoreInfo(event));
+    this.shadowRoot.addEventListener("keydown", event => this._handleMoreInfo(event));
   }
   setConfig(config) {
     if (!config) throw new Error("Ugyldig konfiguration");
-    this._config = { title: "Fjernvarme", animation: true, show_details: true, entities: {}, ...config, entities: { ...(config.entities || {}) } };
-    this._signature = ""; this._render();
+    const nextConfig = { title: "Fjernvarme", animation: true, show_details: true, entities: {}, ...config, entities: { ...(config.entities || {}) } };
+    const signature = JSON.stringify(nextConfig);
+    this._config = nextConfig;
+    if (signature === this._configSignature) return;
+    this._configSignature = signature;
+    this._signature = ""; this._render(true);
   }
   set hass(hass) {
     this._hass = hass;
@@ -84,19 +90,19 @@ class HAFjernvarmeHouseCard extends HTMLElement {
   }
   _metric(label,key,digits=1,cls="") { return `<div class="metric entity-hit ${cls}" data-key="${key}" tabindex="0"><small>${label}</small><strong>${this._fmt(key,digits)}</strong></div>`; }
   _status(label,key) { const e=this._entity(key), bad=/fejl|alarm|kritisk/i.test(key)&&this._on(key); return `<div class="metric entity-hit ${bad?"bad":""}" data-key="${key}" tabindex="0"><small>${label}</small><strong>${e?this._esc(e.state):"—"}</strong></div>`; }
+  _standbyStatus() { const e=this._entity("auto_standby_status"), countdown=e?.attributes?.countdown; const value=e?`${this._esc(e.state)}${countdown?` · ${this._esc(countdown)}`:""}`:"—"; return `<div class="metric entity-hit" data-key="auto_standby_status" tabindex="0"><small>Auto standby</small><strong>${value}</strong></div>`; }
   _binaryStatus(label,key,onText,offText) { const e=this._entity(key); return `<div class="metric entity-hit" data-key="${key}" tabindex="0"><small>${label}</small><strong>${e?(this._on(key)?onText:offText):"—"}</strong></div>`; }
-  _bindMoreInfo() {
-    const open = key => {
-      const entityId = this._entityId(key);
-      if (!entityId || Array.isArray(entityId)) return;
-      this.dispatchEvent(new CustomEvent("hass-more-info",{detail:{entityId},bubbles:true,composed:true}));
-    };
-    this.shadowRoot.querySelectorAll("[data-key]").forEach(element => {
-      element.addEventListener("click",event=>{event.stopPropagation();open(element.dataset.key);});
-      element.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();open(element.dataset.key);}});
-    });
+  _handleMoreInfo(event) {
+    if (event.type === "keydown" && event.key !== "Enter" && event.key !== " ") return;
+    const element = event.target?.closest?.("[data-key]");
+    if (!element) return;
+    if (event.type === "keydown") event.preventDefault();
+    event.stopPropagation();
+    const entityId = this._entityId(element.dataset.key);
+    if (!entityId || Array.isArray(entityId)) return;
+    this.dispatchEvent(new CustomEvent("hass-more-info",{detail:{entityId},bubbles:true,composed:true}));
   }
-  _render() {
+  _render(forceStructure = false) {
     if (!this.shadowRoot) return;
     const ps=this._num("primary_supply"), pr=this._num("primary_return"), cs=this._num("ch_supply"), cr=this._num("ch_return"), hot=this._num("dhw_hot_out"), cold=this._num("dhw_cold_in");
     const primaryReturn=this._returnColor(ps,pr), radiatorReturn=this._returnColor(cs,cr);
@@ -111,9 +117,9 @@ class HAFjernvarmeHouseCard extends HTMLElement {
       <section><h3>Fjernvarme</h3><div class="metric-grid">${this._metric("Fremløb","primary_supply")}${this._metric("Retur","primary_return")}${this._metric("Afkøling","primary_cooling")}${this._metric("Flow","meter_flow",2)}${this._metric("Effekt","meter_power",1)}${this._metric("Anlægstryk","pressure",1)}</div></section>
       <section><h3>Radiator</h3><div class="metric-grid">${this._metric("Fremløb","ch_supply")}${this._metric("Retur","ch_return")}${this._metric("Ventil","ch_valve",0)}${this._metric("Flow","ch_flow",1)}${this._metric("Effekt","ch_power",1)}${this._metric("Udetemperatur","ch_outdoor",1)}</div></section>
       <section><h3>Varmt vand</h3><div class="metric-grid">${this._metric("Koldt ind","dhw_cold_in")}${this._metric("Varmt ud","dhw_hot_out")}${this._metric("Flow","dhw_flow",2)}${this._metric("Ventil","dhw_valve",0)}${this._metric("Effekt","dhw_power",1)}${this._status("Bypass","bvv_bypass_status")}</div></section>
-      <section><h3>Drift</h3><div class="metric-grid">${this._binaryStatus("Varmekald","sentio_call_active","Kald","Intet kald")}${this._binaryStatus("Auto standby","auto_standby_engaged","Aktiv","Fra")}${this._binaryStatus("Standby","standby","Til","Fra")}${this._binaryStatus("Ferie","vacation","Til","Fra")}</div></section>
+      <section><h3>Drift</h3><div class="metric-grid">${this._binaryStatus("Radiatorpumpe","ch_pump","Til","Fra")}${this._standbyStatus()}${this._binaryStatus("Standby","standby","Til","Fra")}${this._binaryStatus("Ferie","vacation","Til","Fra")}</div></section>
     </div>`;
-    this.shadowRoot.innerHTML=`<style>${this._styles(ps,primaryReturn,cs,radiatorReturn,hot,cold)}</style><style>${this._responsiveStyles()}</style><ha-card class="${alarms?"alarm":""}">
+    const markup=`<style>${this._styles(ps,primaryReturn,cs,radiatorReturn,hot,cold)}</style><style>${this._responsiveStyles()}</style><ha-card class="${alarms?"alarm":""}">
       <header><div><small>VARMECENTRAL</small><h2>${this._esc(this._config.title)}</h2></div><div class="chips"><span class="alarm-chip">${alarms?`${alarms} alarm${alarms>1?"er":""}`:"Ingen alarmer"}</span><span>${operating}</span></div></header>
       <div class="hero"><div class="diagram"><svg viewBox="0 0 760 520" role="img" aria-label="Fjernvarmeunit med radiator, varmt vand og bypass">
         <defs>
@@ -133,15 +139,52 @@ class HAFjernvarmeHouseCard extends HTMLElement {
         <g class="radiator" transform="translate(587 102)"><rect width="146" height="135" rx="12"/></g>${this._pipe("ch-circuit","M380 119 H612 V205 H628 V119 H644 V205 H660 V119 H676 V205 H692 V119 H708 V220 H380",chActive,8)}
         <g class="label inside-temp entity-hit" data-key="ch_supply" tabindex="0" transform="translate(500 68)" text-anchor="middle"><text>Radiator fremløb</text><text class="label-value" style="font-size:29.25px" y="29">${this._temp("ch_supply")}</text></g><g class="label inside-temp entity-hit" data-key="ch_return" tabindex="0" transform="translate(500 169)" text-anchor="middle"><text>Radiator retur</text><text class="label-value" style="font-size:29.25px" y="29">${this._temp("ch_return")}</text></g><g class="label inside-temp entity-hit" data-key="dhw_hot_out" tabindex="0" transform="translate(500 299)" text-anchor="middle"><text>Varmt brugsvand</text><text class="label-value" style="font-size:29.25px" y="29">${this._temp("dhw_hot_out")}</text></g><g class="label inside-temp entity-hit" data-key="dhw_cold_in" tabindex="0" transform="translate(520 447)" text-anchor="start"><text>Koldtvand ind</text><text class="label-value" style="font-size:29.25px" y="29">${this._temp("dhw_cold_in")}</text></g><g class="tap ${dhwActive ? "active" : ""}" transform="translate(610 270)"><path class="tap-body" d="M30 60 V31 Q30 16 45 16 H78 Q90 16 90 28 V35"/><path class="tap-handle" d="M20 31 H40 M30 21 V41"/><path class="tap-outlet" d="M90 35 V47"/><path class="basin" d="M7 68 H108 L98 88 Q58 99 17 88 Z"/><path class="drop" d="M90 54 C81 66 85 75 90 75 C96 75 100 66 90 54Z"/><text x="58" y="111" text-anchor="middle">VARMT VAND</text></g>
         <g class="label primary in entity-hit" data-key="primary_supply" tabindex="0" transform="translate(75 68)" text-anchor="middle"><text>Fjernvarme fremløb</text><text class="label-value" style="font-size:31.5px" y="30">${this._temp("primary_supply")}</text></g><g class="delta entity-hit" data-key="primary_cooling" tabindex="0" transform="translate(75 205)"><text text-anchor="middle">AFKØLING</text><text class="label-value" style="font-size:20px" text-anchor="middle" y="26">${this._fmt("primary_cooling",1)}</text></g><g class="flow-metric entity-hit" data-key="meter_flow" tabindex="0" transform="translate(75 270)"><text text-anchor="middle">FLOW</text><text class="label-value" style="font-size:20px" text-anchor="middle" y="26">${this._fmt("meter_flow",1)}</text></g><g class="label primary out entity-hit" data-key="primary_return" tabindex="0" transform="translate(75 400)" text-anchor="middle"><text>Retur</text><text class="label-value" style="font-size:31.5px" y="31">${this._temp("primary_return")}</text></g><g class="outdoor-value entity-hit" data-key="ch_outdoor" tabindex="0" transform="translate(430 -42)" text-anchor="middle"><text>UDETEMPERATUR</text><text class="value" style="font-size:22.5px" y="24">${this._temp("ch_outdoor")}</text></g>
-
-
+        
+        
 
       </svg></div><aside>${this._metric("Effekt","meter_power",1)}${this._metric("Tryk","pressure",1)}${this._metric("Radiatorventil","ch_valve",0)}${this._metric("BV-ventil","dhw_valve",0)}</aside></div>${details}
     </ha-card>`;
-    this._bindMoreInfo();
+    const currentCard = this.shadowRoot.querySelector("ha-card");
+    if (forceStructure || !currentCard) {
+      this.shadowRoot.innerHTML = markup;
+      return;
+    }
+    const template = document.createElement("template");
+    template.innerHTML = markup;
+    const currentStyles = this.shadowRoot.querySelectorAll("style");
+    const nextStyles = template.content.querySelectorAll("style");
+    currentStyles.forEach((style, index) => {
+      if (nextStyles[index] && style.textContent !== nextStyles[index].textContent) style.textContent = nextStyles[index].textContent;
+    });
+    this._morphNode(currentCard, template.content.querySelector("ha-card"));
+  }
+  _morphNode(current, next) {
+    if (!current || !next) return;
+    if (current.nodeType !== next.nodeType || current.nodeName !== next.nodeName) {
+      current.replaceWith(next.cloneNode(true)); return;
+    }
+    if (current.nodeType === Node.TEXT_NODE) {
+      if (current.nodeValue !== next.nodeValue) current.nodeValue = next.nodeValue;
+      return;
+    }
+    if (current.nodeType !== Node.ELEMENT_NODE) return;
+    for (const attribute of Array.from(current.attributes)) {
+      if (!next.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
+    }
+    for (const attribute of Array.from(next.attributes)) {
+      if (current.getAttribute(attribute.name) !== attribute.value) current.setAttribute(attribute.name, attribute.value);
+    }
+    const currentChildren = Array.from(current.childNodes);
+    const nextChildren = Array.from(next.childNodes);
+    for (let index = currentChildren.length - 1; index >= nextChildren.length; index -= 1) currentChildren[index].remove();
+    for (let index = 0; index < nextChildren.length; index += 1) {
+      const existing = current.childNodes[index];
+      if (!existing) current.appendChild(nextChildren[index].cloneNode(true));
+      else this._morphNode(existing, nextChildren[index]);
+    }
   }
   _styles(ps,pr,cs,cr,hot,cold) { return `
-    :host{display:block;--card-surface:var(--dashboard-card-bg,var(--ha-card-background,var(--card-background-color,#111820)))}ha-card{display:block;box-sizing:border-box;padding:16px;overflow:hidden;background:var(--card-surface);color:var(--primary-text-color);border:1px solid color-mix(in srgb,var(--divider-color) 65%,transparent);border-radius:28px}header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:3px 7px 9px}header small{font-size:10px;letter-spacing:.18em;color:var(--secondary-text-color)}h2{font-size:25px;margin:3px 0 0}.chips{display:flex;gap:7px;align-items:center;justify-content:flex-end;flex-wrap:wrap}.chips span{font-size:10px;padding:7px 10px;border:1px solid color-mix(in srgb,var(--success-color,#62cfad) 32%,transparent);border-radius:18px;color:var(--success-color,#7bd9ba);background:#55cba908}.alarm .alarm-chip{color:#f18787;border-color:#e7666655;background:#e7666610}.hero{display:grid;grid-template-columns:minmax(0,1fr) 92px;gap:10px}.diagram{min-width:0;aspect-ratio:760/520}.diagram svg{width:100%;height:100%;overflow:visible}.house{fill:#f2994a14;stroke:#78a4b940;stroke-width:1.5}.zone{font-size:10px;letter-spacing:1.6px;font-weight:700;fill:var(--secondary-text-color)}.pipe-rim,.pipe-core,.pipe-heat,.water-sheen{fill:none;stroke-linecap:round;stroke-linejoin:round}.pipe-rim{stroke:#8597a5;stroke-width:18;opacity:.75}.pipe-core{stroke:#1b2b35;stroke-width:14}.pipe-heat{stroke-width:9;opacity:.65}.water-sheen{display:none;stroke:rgba(222,247,255,.38);stroke-width:1.4;stroke-dasharray:3 16;filter:drop-shadow(0 0 1.5px rgba(190,236,255,.34))}.pipe.active .water-sheen{display:inline;animation:water-shimmer 3.2s linear infinite}.primary-supply .pipe-heat{stroke:#ed554f}.primary-return .pipe-heat{stroke:${pr}}.ch-circuit .pipe-heat{stroke:url(#${this._id}-radiator-cooling)}.ch-circuit .water-sheen{stroke-width:1.2;opacity:.38;animation-duration:4.4s!important}.ch-circuit .water-pulse{fill:rgba(231,249,255,.60);opacity:.46;transform:scale(.62)}.dhw-hot .pipe-heat{stroke:url(#${this._id}-dhw)}.dhw-cold .pipe-heat{stroke:${this._tempColor(cold)}}.water-pulse{display:none;fill:rgba(230,249,255,.66);filter:drop-shadow(0 0 2px rgba(195,239,255,.30));opacity:.62}.water-pulse circle{fill:rgba(255,255,255,.36)}.pipe.active .water-pulse{display:inline}.pipe:not(.active){opacity:.42}.pipe:not(.active) .water-sheen{display:none;animation:none}.unit rect{fill:#162631;stroke:#83a9ba;stroke-width:1.7}.unit text{font-size:8px;font-weight:700;letter-spacing:1px;fill:#a9bcc7}.unit .unit-title{font-size:9px}.exchanger .ex-title{font-size:9px}.exchanger-metrics .k{font-size:6.5px;fill:var(--secondary-text-color);font-weight:600}.exchanger-metrics .v{font-size:12px;fill:var(--primary-text-color);font-weight:700;letter-spacing:0}.exchanger-metrics .v.small{font-size:8px}.primary-row text{font-size:7px;fill:var(--secondary-text-color);letter-spacing:.05em}.primary-row .value{font-size:14px;font-weight:700;fill:var(--primary-text-color);letter-spacing:0}.primary-row .primary-flow{font-size:8px;fill:var(--secondary-text-color)}.outdoor-value text,.outdoor-value .value{font-size:8px;letter-spacing:.08em;fill:var(--secondary-text-color)}.outdoor-value .value{font-weight:700;letter-spacing:0;fill:var(--primary-text-color)}.unit circle{fill:#dce8ed;stroke:#13202a}.exchanger rect{fill:#1c2d38;stroke:#7598aa;stroke-width:1;opacity:.85}.exchanger path{fill:none;stroke:#7598aa;stroke-width:3.5;opacity:.85}.radiator>rect{fill:#1a2a35;stroke:#94aeba;stroke-width:1.5}.radiator .fin{fill:#253b47;stroke:#688492;stroke-width:.7}.radiator text,.tap text{font-size:8px;letter-spacing:1px;fill:var(--secondary-text-color)}.unit-valve circle{fill:#192a35;stroke:#d7a06f;stroke-width:1.2}.unit-valve path{fill:none;stroke:#e5b17d;stroke-width:1.3}.unit-valve text{font-size:6.5px;letter-spacing:.04em;fill:#e9c39d}.primary-unit-valve text{fill:#b9cbd4}.tap .tap-body,.tap .tap-outlet{fill:none;stroke:#9bb0ba;stroke-width:5;stroke-linecap:round;stroke-linejoin:round}.tap .tap-handle{fill:none;stroke:#b9cbd3;stroke-width:3;stroke-linecap:round}.tap .basin{fill:#172832;stroke:#7894a2;stroke-width:2;stroke-linejoin:round}.tap .drop{fill:${this._tempColor(hot)};stroke:none;opacity:0}.tap.active .drop{animation:drop 2s ease-in infinite}.label text,.bypass-label text,.bypass-icon text,.circuit-meta text,.delta text,.flow-metric text{font-size:9px;fill:var(--secondary-text-color)}.bypass-icon circle{fill:#1b2c37;stroke:#7898a8;stroke-width:1.5}.bypass-icon path{fill:none;stroke:#7898a8;stroke-width:2;stroke-linecap:round}.bypass-icon text{fill:var(--secondary-text-color);font-size:8px}.bypass-icon .label-value{fill:var(--primary-text-color);font-size:12px;font-weight:650}.bypass-icon.active circle{stroke:#e99a6f;filter:drop-shadow(0 0 5px #e87e5855)}.bypass-icon.active path{stroke:#e99a6f;transform-origin:center;animation:bypass-turn 2.4s linear infinite}.circuit-meta text{fill:var(--secondary-text-color);font-size:8px}.circuit-meta .label-value{fill:var(--primary-text-color);font-size:12px;font-weight:650}.label .pipe-meta{font-size:9px;fill:#b7c4cc}.label .label-value,.bypass-label .label-value,.delta .label-value,.flow-metric .label-value{font-size:15px;font-weight:650;fill:var(--primary-text-color)}.label.primary .label-value{font-size:21px}.delta .label-value{font-size:19px;fill:${this._coolingStatusColor(this._num("primary_cooling"))}}aside{display:grid;grid-template-rows:repeat(4,1fr);border-left:1px solid #ffffff14;padding-left:8px}.metric{min-width:0;display:flex;flex-direction:column;justify-content:center;text-align:center;padding:7px 4px}.metric small,.metric strong{display:block;overflow:hidden;text-overflow:ellipsis}.metric small{font-size:8px;color:var(--secondary-text-color);white-space:normal}.metric strong{font-size:13px;font-weight:600;margin-top:3px;white-space:nowrap}.details{display:grid;grid-template-columns:1.05fr 1fr 1.25fr 1.2fr;gap:8px;padding-top:11px;margin-top:5px;border-top:1px solid #ffffff12}.details section{min-width:0;padding:9px;border:1px solid #ffffff0e;border-radius:13px;background:#ffffff04}.details h3{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--secondary-text-color);margin:0 0 6px}.metric-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px}.metric-grid .metric{border-radius:8px;background:#ffffff04;min-height:37px}.metric.bad strong{color:#ef7777}@keyframes bypass-turn{to{transform:rotate(360deg)}}@keyframes water-shimmer{to{stroke-dashoffset:-38}}@keyframes drop{0%,35%{transform:translateY(-3px);opacity:0}60%{opacity:1}100%{transform:translateY(10px);opacity:0}}${this._config.animation===false?".water-pulse{display:none!important}.water-sheen,.drop,.bypass-icon.active path,.bypass-icon.active .bypass-pulse,.dhw-bypass.active .bypass-flow{animation:none!important}":""}@media(prefers-reduced-motion:reduce){.water-pulse{display:none!important}.water-sheen,.drop,.bypass-icon.active path,.bypass-icon.active .bypass-pulse,.dhw-bypass.active .bypass-flow{animation:none!important}}@media(max-width:700px){ha-card{padding:11px;border-radius:22px}.hero{grid-template-columns:minmax(0,1fr) 72px}.details{grid-template-columns:repeat(2,minmax(0,1fr))}h2{font-size:21px}.chips .alarm-chip{display:none}}@media(max-width:480px){.hero{grid-template-columns:1fr}.diagram{aspect-ratio:760/540}aside{grid-template-columns:repeat(4,minmax(0,1fr));grid-template-rows:auto;border-left:0;border-top:1px solid #ffffff14;padding:5px 0 0}.details{grid-template-columns:1fr}.chips span{font-size:8px;padding:5px 7px}.label.primary .label-value{font-size:18px}}
+    :host{display:block;--card-surface:var(--dashboard-card-bg,var(--ha-card-background,var(--card-background-color,#111820)))}ha-card{display:block;box-sizing:border-box;padding:16px;overflow:hidden;background:var(--card-surface);color:var(--primary-text-color);border:var(--ha-card-border-width,1px) solid var(--ha-card-border-color,color-mix(in srgb,var(--divider-color) 65%,transparent));border-radius:28px}header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:3px 7px 9px}header small{font-size:10px;letter-spacing:.18em;color:var(--secondary-text-color)}h2{font-size:25px;margin:3px 0 0}.chips{display:flex;gap:7px;align-items:center;justify-content:flex-end;flex-wrap:wrap}.chips span{font-size:10px;padding:7px 10px;border:1px solid color-mix(in srgb,var(--success-color,#62cfad) 32%,transparent);border-radius:18px;color:var(--success-color,#7bd9ba);background:#55cba908}.alarm .alarm-chip{color:#f18787;border-color:#e7666655;background:#e7666610}.hero{display:grid;grid-template-columns:minmax(0,1fr) 92px;gap:10px}.diagram{min-width:0;aspect-ratio:760/520}.diagram svg{width:100%;height:100%;overflow:visible}.house{fill:#f2994a14;stroke:#78a4b940;stroke-width:1.5}.zone{font-size:10px;letter-spacing:1.6px;font-weight:700;fill:var(--secondary-text-color)}.pipe-rim,.pipe-core,.pipe-heat,.water-sheen{fill:none;stroke-linecap:round;stroke-linejoin:round}.pipe-rim{stroke:#8597a5;stroke-width:18;opacity:.75}.pipe-core{stroke:#1b2b35;stroke-width:14}.pipe-heat{stroke-width:9;opacity:.65}.water-sheen{display:none;stroke:rgba(222,247,255,.38);stroke-width:1.4;stroke-dasharray:3 16;filter:drop-shadow(0 0 1.5px rgba(190,236,255,.34))}.pipe.active .water-sheen{display:inline;animation:water-shimmer 3.2s linear infinite}.primary-supply .pipe-heat{stroke:#ed554f}.primary-return .pipe-heat{stroke:${pr}}.ch-circuit .pipe-heat{stroke:url(#${this._id}-radiator-cooling)}.ch-circuit .water-sheen{stroke-width:1.2;opacity:.38;animation-duration:4.4s!important}.ch-circuit .water-pulse{fill:rgba(231,249,255,.60);opacity:.46;transform:scale(.62)}.dhw-hot .pipe-heat{stroke:url(#${this._id}-dhw)}.dhw-cold .pipe-heat{stroke:${this._tempColor(cold)}}.water-pulse{display:none;fill:rgba(230,249,255,.66);filter:drop-shadow(0 0 2px rgba(195,239,255,.30));opacity:.62}.water-pulse circle{fill:rgba(255,255,255,.36)}.pipe.active .water-pulse{display:inline}.pipe:not(.active){opacity:.42}.pipe:not(.active) .water-sheen{display:none;animation:none}.unit rect{fill:#162631;stroke:#83a9ba;stroke-width:1.7}.unit text{font-size:8px;font-weight:700;letter-spacing:1px;fill:#a9bcc7}.unit .unit-title{font-size:9px}.exchanger .ex-title{font-size:9px}.exchanger-metrics .k{font-size:6.5px;fill:var(--secondary-text-color);font-weight:600}.exchanger-metrics .v{font-size:12px;fill:var(--primary-text-color);font-weight:700;letter-spacing:0}.exchanger-metrics .v.small{font-size:8px}.primary-row text{font-size:7px;fill:var(--secondary-text-color);letter-spacing:.05em}.primary-row .value{font-size:14px;font-weight:700;fill:var(--primary-text-color);letter-spacing:0}.primary-row .primary-flow{font-size:8px;fill:var(--secondary-text-color)}.outdoor-value text,.outdoor-value .value{font-size:8px;letter-spacing:.08em;fill:var(--secondary-text-color)}.outdoor-value .value{font-weight:700;letter-spacing:0;fill:var(--primary-text-color)}.unit circle{fill:#dce8ed;stroke:#13202a}.exchanger rect{fill:#1c2d38;stroke:#7598aa;stroke-width:1;opacity:.85}.exchanger path{fill:none;stroke:#7598aa;stroke-width:3.5;opacity:.85}.radiator>rect{fill:#1a2a35;stroke:#94aeba;stroke-width:1.5}.radiator .fin{fill:#253b47;stroke:#688492;stroke-width:.7}.radiator text,.tap text{font-size:8px;letter-spacing:1px;fill:var(--secondary-text-color)}.unit-valve circle{fill:#192a35;stroke:#d7a06f;stroke-width:1.2}.unit-valve path{fill:none;stroke:#e5b17d;stroke-width:1.3}.unit-valve text{font-size:6.5px;letter-spacing:.04em;fill:#e9c39d}.primary-unit-valve text{fill:#b9cbd4}.tap .tap-body,.tap .tap-outlet{fill:none;stroke:#9bb0ba;stroke-width:5;stroke-linecap:round;stroke-linejoin:round}.tap .tap-handle{fill:none;stroke:#b9cbd3;stroke-width:3;stroke-linecap:round}.tap .basin{fill:#172832;stroke:#7894a2;stroke-width:2;stroke-linejoin:round}.tap .drop{fill:${this._tempColor(hot)};stroke:none;opacity:0}.tap.active .drop{animation:drop 2s ease-in infinite}.label text,.bypass-label text,.bypass-icon text,.circuit-meta text,.delta text,.flow-metric text{font-size:9px;fill:var(--secondary-text-color)}.bypass-icon circle{fill:#1b2c37;stroke:#7898a8;stroke-width:1.5}.bypass-icon path{fill:none;stroke:#7898a8;stroke-width:2;stroke-linecap:round}.bypass-icon text{fill:var(--secondary-text-color);font-size:8px}.bypass-icon .label-value{fill:var(--primary-text-color);font-size:12px;font-weight:650}.bypass-icon.active circle{stroke:#e99a6f;filter:drop-shadow(0 0 5px #e87e5855)}.bypass-icon.active path{stroke:#e99a6f;transform-origin:center;animation:bypass-turn 2.4s linear infinite}.circuit-meta text{fill:var(--secondary-text-color);font-size:8px}.circuit-meta .label-value{fill:var(--primary-text-color);font-size:12px;font-weight:650}.label .pipe-meta{font-size:9px;fill:#b7c4cc}.label .label-value,.bypass-label .label-value,.delta .label-value,.flow-metric .label-value{font-size:15px;font-weight:650;fill:var(--primary-text-color)}.label.primary .label-value{font-size:21px}.delta .label-value{font-size:19px;fill:${this._coolingStatusColor(this._num("primary_cooling"))}}aside{display:grid;grid-template-rows:repeat(4,1fr);border-left:1px solid #ffffff14;padding-left:8px}.metric{min-width:0;display:flex;flex-direction:column;justify-content:center;text-align:center;padding:7px 4px}.metric small,.metric strong{display:block;overflow:hidden;text-overflow:ellipsis}.metric small{font-size:8px;color:var(--secondary-text-color);white-space:normal}.metric strong{font-size:13px;font-weight:600;margin-top:3px;white-space:nowrap}.details{display:grid;grid-template-columns:1.05fr 1fr 1.25fr 1.2fr;gap:8px;padding-top:11px;margin-top:5px;border-top:1px solid #ffffff12}.details section{min-width:0;padding:9px;border:1px solid #ffffff0e;border-radius:13px;background:#ffffff04}.details h3{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--secondary-text-color);margin:0 0 6px}.metric-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px}.metric-grid .metric{border-radius:8px;background:#ffffff04;min-height:37px}.metric.bad strong{color:#ef7777}@keyframes bypass-turn{to{transform:rotate(360deg)}}@keyframes water-shimmer{to{stroke-dashoffset:-38}}@keyframes drop{0%,35%{transform:translateY(-3px);opacity:0}60%{opacity:1}100%{transform:translateY(10px);opacity:0}}${this._config.animation===false?".water-pulse{display:none!important}.water-sheen,.drop,.bypass-icon.active path,.bypass-icon.active .bypass-pulse,.dhw-bypass.active .bypass-flow{animation:none!important}":""}@media(prefers-reduced-motion:reduce){.water-pulse{display:none!important}.water-sheen,.drop,.bypass-icon.active path,.bypass-icon.active .bypass-pulse,.dhw-bypass.active .bypass-flow{animation:none!important}}@media(max-width:700px){ha-card{padding:11px;border-radius:22px}.hero{grid-template-columns:minmax(0,1fr) 72px}.details{grid-template-columns:repeat(2,minmax(0,1fr))}h2{font-size:21px}.chips .alarm-chip{display:none}}@media(max-width:480px){.hero{grid-template-columns:1fr}.diagram{aspect-ratio:760/540}aside{grid-template-columns:repeat(4,minmax(0,1fr));grid-template-rows:auto;border-left:0;border-top:1px solid #ffffff14;padding:5px 0 0}.details{grid-template-columns:1fr}.chips span{font-size:8px;padding:5px 7px}.label.primary .label-value{font-size:18px}}
   `; }
   _responsiveStyles() { return `
     :host {
@@ -273,7 +316,7 @@ class HAFjernvarmeHouseCard extends HTMLElement {
 }
 
 class HAFjernvarmeHouseCardEditor extends HTMLElement {
-  setConfig(config){this._config=config||{};this._render();}
+  setConfig(config){this._config=config||{};if(!this._form)this._render();else this._form.data=this._config;}
   set hass(hass){this._hass=hass;if(this._form)this._form.hass=hass;}
   _render(){
     if(!this._config)return;
@@ -286,6 +329,7 @@ class HAFjernvarmeHouseCardEditor extends HTMLElement {
 }
 
 if(!customElements.get("ha-fjernvarme-house-card"))customElements.define("ha-fjernvarme-house-card",HAFjernvarmeHouseCard);
+if(!customElements.get("ha-fjernvarme-house-card-v2"))customElements.define("ha-fjernvarme-house-card-v2",class extends HAFjernvarmeHouseCard{});
 if(!customElements.get("ha-fjernvarme-house-card-editor"))customElements.define("ha-fjernvarme-house-card-editor",HAFjernvarmeHouseCardEditor);
-window.customCards=window.customCards||[];window.customCards.push({type:"ha-fjernvarme-house-card",name:"HA Fjernvarme House Card",description:"Fjernvarmeunit med temperaturstyrede rør, radiator, varmt vand og bypass",preview:true});
+window.customCards=window.customCards||[];window.customCards.push({type:"ha-fjernvarme-house-card-v2",name:"HA Fjernvarme House Card",description:"Fjernvarmeunit med temperaturstyrede rør, radiator, varmt vand og bypass",preview:true});
 console.info(`%c HA-FJERNVARME-HOUSE-CARD %c ${VERSION} `,"color:#fff;background:#bb433f;font-weight:700","color:#bb433f;background:#fff");
