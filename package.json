@@ -1,1 +1,1 @@
-{"name":"ha-fjernvarme-house-card","version":"0.1.50","description":"Home Assistant Lovelace custom card","license":"MIT","scripts":{"check":"node --check ha-fjernvarme-house-card.js"}}
+{"name":"ha-fjernvarme-house-card","version":"0.1.51","description":"Home Assistant Lovelace custom card","license":"MIT","scripts":{"check":"node --check ha-fjernvarme-house-card.js"}}
